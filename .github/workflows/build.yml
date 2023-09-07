@@ -68,11 +68,12 @@ jobs:
         if: matrix.build == 'zigbuild'
         run: pip install ziglang==0.10.1.post1 cargo-zigbuild==0.17.0
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
+          components: rust-src
           targets: ${{ matrix.target }}
       - name: Cargo build
-        run: cargo ${{ matrix.build }} --release --all-features --target ${{ matrix.target }} --bin ${{ env.CARGO_BIN_NAME }}
+        run: cargo ${{ matrix.build }} --release --all-features --target ${{ matrix.target }} --bin ${{ env.CARGO_BIN_NAME }} -Z build-std=std,panic_abort
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
