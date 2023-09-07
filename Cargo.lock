@@ -52,7 +52,7 @@ checksum = "bc62ccb14881da5d1862cda3a9648fb4a4897b2aff0b2557b89da44a5e550b7c"
 
 [[package]]
 name = "sjiswrap"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "encoding_rs",

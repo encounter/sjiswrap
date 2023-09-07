@@ -1,7 +1,24 @@
 [package]
 name = "sjiswrap"
-version = "0.1.0"
+description = "UTF-8 to Shift JIS wrapper for old compilers."
+authors = ["Luke Street <luke@street.dev>"]
+license = "MIT OR Apache-2.0"
+version = "1.0.0"
 edition = "2021"
+publish = false
+repository = "https://github.com/encounter/sjiswrap"
+readme = "README.md"
+categories = ["command-line-utilities"]
+
+# Size optimizations
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+panic = "abort"
+
+[features]
+debug = []
 
 [dependencies]
 anyhow = "1.0.72"
