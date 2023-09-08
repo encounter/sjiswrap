@@ -25,9 +25,9 @@ jobs:
         with:
           components: clippy
       - name: Cargo check
-        run: cargo check --all-features --all-targets
+        run: cargo check --features debug --all-targets
       - name: Cargo clippy
-        run: cargo clippy --all-features --all-targets
+        run: cargo clippy --features debug --all-targets
 
   fmt:
     name: Format
@@ -73,7 +73,7 @@ jobs:
           components: rust-src
           targets: ${{ matrix.target }}
       - name: Cargo build
-        run: cargo ${{ matrix.build }} --release --all-features --target ${{ matrix.target }} --bin ${{ env.CARGO_BIN_NAME }} -Z build-std=std,panic_abort
+        run: cargo ${{ matrix.build }} --release --features nightly --target ${{ matrix.target }} --bin ${{ env.CARGO_BIN_NAME }} -Z build-std=std,panic_abort
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:

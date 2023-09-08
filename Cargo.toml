@@ -19,10 +19,14 @@ panic = "abort"
 
 [features]
 debug = []
+nightly = [
+    "encoding_rs/simd-accel",
+    "encoding_rs/fast-kanji-encode",
+]
 
 [dependencies]
 anyhow = "1.0.72"
-encoding_rs = { version = "0.8.32", features = ["simd-accel", "fast-kanji-encode"] }
+encoding_rs = "0.8.32"
 memexec = { version = "0.2.0", features = ["hook"] }
 rustc-hash = "1.1.0"
 
