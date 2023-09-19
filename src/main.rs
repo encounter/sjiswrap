@@ -19,8 +19,8 @@ use windows::{
     core::{PCSTR, PCWSTR},
     Win32::{
         Foundation::{
-            CloseHandle, GetLastError, SetLastError, BOOL, GENERIC_ACCESS_RIGHTS, GENERIC_READ,
-            HANDLE, INVALID_HANDLE_VALUE,
+            CloseHandle, GetLastError, SetLastError, BOOL, ERROR_INSUFFICIENT_BUFFER,
+            GENERIC_ACCESS_RIGHTS, GENERIC_READ, HANDLE, HMODULE, INVALID_HANDLE_VALUE,
         },
         Security::SECURITY_ATTRIBUTES,
         Storage::FileSystem::{
@@ -68,22 +68,22 @@ fn main() -> Result<()> {
         exit(1);
     }
 
-    unsafe { GLOBAL_STATE = MaybeUninit::new(GlobalState::default()) };
-
     let path = PathBuf::from(&args[1]);
-    let parent = CString::new(
-        path.parent()
-            .context("Failed to get executable parent directory")?
-            .to_string_lossy()
-            .as_ref(),
-    )
-    .unwrap();
-    let parent =
-        get_full_path(&parent).expect("Failed to get absolute executable parent directory");
-    unsafe { SetDllDirectoryA(PCSTR(parent.as_ptr() as *const u8)) }
+    let abs_path_cstr =
+        get_full_path(&CString::new(path.as_os_str().to_string_lossy().as_ref()).unwrap())
+            .context("Failed to get absolute executable path")?;
+    let abs_path = PathBuf::from(abs_path_cstr.to_string_lossy().as_ref());
+    let parent = abs_path.parent().context("Failed to get absolute executable parent directory")?;
+    let parent_cstr = CString::new(parent.as_os_str().to_string_lossy().as_ref()).unwrap();
+    unsafe { SetDllDirectoryA(PCSTR(parent_cstr.as_ptr() as *const u8)) }
         .ok()
         .context("SetDllDirectoryA() failed")?;
     debug_println!("SetDllDirectoryA({:?})", parent.to_string_lossy());
+
+    unsafe {
+        GLOBAL_STATE =
+            MaybeUninit::new(GlobalState { exe_path: abs_path_cstr, ..Default::default() })
+    };
 
     let mut buf = Vec::new();
     File::open(&path)
@@ -101,6 +101,8 @@ fn main() -> Result<()> {
     hooks.insert("kernel32.dll!ReadFile".into(), hook_ReadFile as *const c_void);
     hooks.insert("kernel32.dll!SetFilePointer".into(), hook_SetFilePointer as *const c_void);
     hooks.insert("kernel32.dll!IsDBCSLeadByte".into(), hook_IsDBCSLeadByte as *const c_void);
+    hooks
+        .insert("kernel32.dll!GetModuleFileNameA".into(), hook_GetModuleFileNameA as *const c_void);
     unsafe { memexec::memexec_exe_with_hooks(&buf, &hooks) }.expect("Failed to execute");
     Ok(())
 }
@@ -114,6 +116,7 @@ struct FileHandle {
 /// Global state shared between hooks.
 #[derive(Default)]
 struct GlobalState {
+    exe_path: CString,
     cmdline: Option<CString>,
     encoded_files: FxHashMap<PathBuf, Vec<u8>>,
     file_handles: FxHashMap<isize, FileHandle>,
@@ -446,6 +449,38 @@ extern "stdcall" fn hook_SetFilePointer(
 
 /// `IsDBCSLeadByte` hook. This normally uses the system codepage, override with Shift JIS behavior.
 extern "stdcall" fn hook_IsDBCSLeadByte(TestChar: u8) -> BOOL { (TestChar & 0x80 != 0).into() }
+
+/// `GetModuleFileNameA` hook. Return the absolute path of the executable.
+extern "stdcall" fn hook_GetModuleFileNameA(
+    hModule: HMODULE,
+    lpFilename: *mut c_char,
+    nSize: u32,
+) -> u32 {
+    let _ = hModule; // ?
+
+    let state = unsafe { GLOBAL_STATE.assume_init_ref() };
+    let path_bytes = state.exe_path.as_bytes(); // Without nul terminator
+    let ret = min(nSize.saturating_sub(1), path_bytes.len() as u32);
+    if !lpFilename.is_null() && ret > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), lpFilename as *mut u8, ret as usize);
+        }
+        unsafe { *lpFilename.offset(ret as isize) = 0 };
+    }
+    #[cfg(feature = "debug")]
+    {
+        let slice = unsafe { std::slice::from_raw_parts(lpFilename as *const u8, ret as usize) };
+        let str = unsafe { std::str::from_utf8_unchecked(slice) };
+        eprintln!(
+            "OVERRIDE GetModuleFileNameA({:#X}, {:?}, {:#X}) = {:#X} ({})",
+            hModule.0, lpFilename, nSize, ret, str
+        );
+    }
+    if ret < path_bytes.len() as u32 {
+        unsafe { SetLastError(ERROR_INSUFFICIENT_BUFFER) };
+    }
+    ret
+}
 
 /// Get the absolute path of a file.
 fn get_full_path(path: &CStr) -> Result<CString> {
