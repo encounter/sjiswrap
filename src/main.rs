@@ -24,11 +24,16 @@ use windows::{
         },
         Security::SECURITY_ATTRIBUTES,
         Storage::FileSystem::{
-            CreateFileA, GetFileSize, GetFullPathNameA, ReadFile, SetFilePointer, FILE_BEGIN,
-            FILE_CREATION_DISPOSITION, FILE_CURRENT, FILE_END, FILE_FLAGS_AND_ATTRIBUTES,
-            FILE_SHARE_MODE, SET_FILE_POINTER_MOVE_METHOD,
+            CreateFileA, GetFileSize, GetFullPathNameA, ReadFile, ReadFileEx, SetFilePointer,
+            FILE_BEGIN, FILE_CREATION_DISPOSITION, FILE_CURRENT, FILE_END,
+            FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, SET_FILE_POINTER_MOVE_METHOD,
         },
-        System::{Environment::GetCommandLineA, LibraryLoader::SetDllDirectoryA, IO::OVERLAPPED},
+        System::{
+            Environment::GetCommandLineA,
+            LibraryLoader::SetDllDirectoryA,
+            Memory::{CreateFileMappingA, MapViewOfFile, FILE_MAP, PAGE_PROTECTION_FLAGS},
+            IO::{LPOVERLAPPED_COMPLETION_ROUTINE, OVERLAPPED},
+        },
     },
 };
 
@@ -99,10 +104,20 @@ fn main() -> Result<()> {
     hooks.insert("kernel32.dll!GetFileSize".into(), hook_GetFileSize as *const c_void);
     hooks.insert("kernel32.dll!CloseHandle".into(), hook_CloseHandle as *const c_void);
     hooks.insert("kernel32.dll!ReadFile".into(), hook_ReadFile as *const c_void);
+    hooks.insert("kernel32.dll!ReadFileEx".into(), hook_ReadFileEx as *const c_void);
     hooks.insert("kernel32.dll!SetFilePointer".into(), hook_SetFilePointer as *const c_void);
     hooks.insert("kernel32.dll!IsDBCSLeadByte".into(), hook_IsDBCSLeadByte as *const c_void);
     hooks
         .insert("kernel32.dll!GetModuleFileNameA".into(), hook_GetModuleFileNameA as *const c_void);
+    hooks
+        .insert("kernel32.dll!CreateFileMappingA".into(), hook_CreateFileMappingA as *const c_void);
+    hooks
+        .insert("kernel32.dll!CreateFileMappingW".into(), hook_CreateFileMappingW as *const c_void);
+    hooks.insert("kernel32.dll!OpenFileMappingA".into(), hook_OpenFileMappingA as *const c_void);
+    hooks.insert("kernel32.dll!OpenFileMappingW".into(), hook_OpenFileMappingW as *const c_void);
+    hooks.insert("kernel32.dll!MapViewOfFile".into(), hook_MapViewOfFile as *const c_void);
+    hooks.insert("kernel32.dll!MapViewOfFileEx".into(), hook_MapViewOfFileEx as *const c_void);
+    hooks.insert("kernel32.dll!UnmapViewOfFile".into(), hook_UnmapViewOfFile as *const c_void);
     unsafe { memexec::memexec_exe_with_hooks(&buf, &hooks) }.expect("Failed to execute");
     Ok(())
 }
@@ -120,6 +135,7 @@ struct GlobalState {
     cmdline: Option<CString>,
     encoded_files: FxHashMap<PathBuf, Vec<u8>>,
     file_handles: FxHashMap<*mut c_void, FileHandle>,
+    file_mapping_handles: FxHashMap<*mut c_void, HANDLE>,
 }
 
 impl GlobalState {
@@ -127,6 +143,10 @@ impl GlobalState {
         self.file_handles
             .get_mut(&handle.0)
             .and_then(|file| self.encoded_files.get(&file.path).map(|data| (file, data.as_slice())))
+    }
+
+    fn file_by_mapping_handle(&mut self, handle: HANDLE) -> Option<(&mut FileHandle, &[u8])> {
+        self.file_mapping_handles.get(&handle.0).cloned().and_then(|file| self.file_by_handle(file))
     }
 }
 
@@ -301,13 +321,13 @@ extern "stdcall" fn hook_GetFileSize(hFile: HANDLE, lpFileSizeHigh: *mut u32) ->
     if !hFile.is_invalid() {
         let state = unsafe { GLOBAL_STATE.assume_init_mut() };
         if let Some((_handle, data)) = state.file_by_handle(hFile) {
-            debug_println!("OVERRIDE: GetFileSize({:#X}) = {:#X}", hFile.0, data.len() as u32);
+            debug_println!("OVERRIDE: GetFileSize({:p}) = {:#X}", hFile.0, data.len() as u32);
             return data.len() as u32;
         }
     }
 
     let ret = unsafe { GetFileSize(hFile, Some(lpFileSizeHigh)) };
-    debug_println!("GetFileSize({:#X}, {:?}) = {:#X}", hFile.0, lpFileSizeHigh, ret);
+    debug_println!("GetFileSize({:p}, {:?}) = {:#X}", hFile.0, lpFileSizeHigh, ret);
     ret
 }
 
@@ -317,14 +337,14 @@ extern "stdcall" fn hook_CloseHandle(hObject: HANDLE) -> BOOL {
         let state = unsafe { GLOBAL_STATE.assume_init_mut() };
         if let Some(handle) = state.file_handles.remove(&hObject.0) {
             let _ = handle;
-            debug_println!("File handle removed: {:#X} ({})", hObject.0, handle.path.display());
+            debug_println!("File handle removed: {:p} ({})", hObject.0, handle.path.display());
             // Purposefully leave the file data itself in the cache.
             // mwcceppc in particular will read the same file multiple times.
         }
     }
 
     let ret = unsafe { CloseHandle(hObject) }.is_ok();
-    debug_println!("CloseHandle({:#X}) = {:#X}", hObject.0, ret);
+    debug_println!("CloseHandle({:p}) = {}", hObject.0, ret);
     ret.into()
 }
 
@@ -355,7 +375,7 @@ extern "stdcall" fn hook_ReadFile(
                 unsafe { *lpNumberOfBytesRead = count };
             }
             debug_println!(
-                "OVERRIDE: ReadFile({:#X}, {:?}, {:#X}, {:?}) = {:#X}",
+                "OVERRIDE: ReadFile({:p}, {:?}, {:#X}, {:?}) = {:#X}",
                 hFile.0,
                 lpBuffer,
                 nNumberOfBytesToRead,
@@ -376,9 +396,10 @@ extern "stdcall" fn hook_ReadFile(
             Some(lpNumberOfBytesRead),
             Some(lpOverlapped),
         )
-    }.is_ok();
+    }
+    .is_ok();
     debug_println!(
-        "ReadFile({:#X}, {:?}, {:#X}, {:?}) = {:#X}",
+        "ReadFile({:p}, {:?}, {:#X}, {:?}) = {}",
         hFile.0,
         lpBuffer,
         nNumberOfBytesToRead,
@@ -386,6 +407,223 @@ extern "stdcall" fn hook_ReadFile(
         ret
     );
     ret.into()
+}
+
+/// `ReadFileEx` hook. Currently unsupported.
+extern "stdcall" fn hook_ReadFileEx(
+    hFile: HANDLE,
+    lpBuffer: *mut c_void,
+    nNumberOfBytesToRead: u32,
+    lpOverlapped: *mut OVERLAPPED,
+    lpCompletionRoutine: LPOVERLAPPED_COMPLETION_ROUTINE,
+) -> BOOL {
+    if !hFile.is_invalid() {
+        let state = unsafe { GLOBAL_STATE.assume_init_mut() };
+        if let Some((_handle, _data)) = state.file_by_handle(hFile) {
+            panic!("ReadFileEx() is not supported");
+        }
+    }
+
+    // Pass through un-encoded files
+    let ret = unsafe {
+        ReadFileEx(
+            hFile,
+            if lpBuffer.is_null() {
+                None
+            } else {
+                Some(std::slice::from_raw_parts_mut(
+                    lpBuffer as *mut u8,
+                    nNumberOfBytesToRead as usize,
+                ))
+            },
+            lpOverlapped,
+            lpCompletionRoutine,
+        )
+    }
+    .is_ok();
+    debug_println!(
+        "ReadFileEx({:p}, {:?}, {:#X}, {:?}, {:?}) = {}",
+        hFile.0,
+        lpBuffer,
+        nNumberOfBytesToRead,
+        lpOverlapped,
+        lpCompletionRoutine,
+        ret
+    );
+    ret.into()
+}
+
+/// `CreateFileMappingA` hook. Currently unsupported.
+extern "stdcall" fn hook_CreateFileMappingA(
+    hFile: HANDLE,
+    lpAttributes: *const SECURITY_ATTRIBUTES,
+    flProtect: PAGE_PROTECTION_FLAGS,
+    dwMaximumSizeHigh: u32,
+    dwMaximumSizeLow: u32,
+    lpName: PCSTR,
+) -> HANDLE {
+    if !hFile.is_invalid() {
+        let state = unsafe { GLOBAL_STATE.assume_init_mut() };
+        if let Some((_handle, _data)) = state.file_by_handle(hFile) {
+            let ret = unsafe {
+                CreateFileMappingA(
+                    hFile,
+                    if lpAttributes.is_null() { None } else { Some(lpAttributes) },
+                    flProtect,
+                    dwMaximumSizeHigh,
+                    dwMaximumSizeLow,
+                    lpName,
+                )
+            }
+            .unwrap_or(INVALID_HANDLE_VALUE);
+            state.file_mapping_handles.insert(ret.0, hFile);
+            debug_println!(
+                "OVERRIDE CreateFileMappingA({:p}, {:?}, {:#X}, {:#X}, {:#X}, {:?}) = {:p}",
+                hFile.0,
+                lpAttributes,
+                flProtect.0,
+                dwMaximumSizeHigh,
+                dwMaximumSizeLow,
+                lpName,
+                ret.0
+            );
+            return ret;
+        }
+    }
+
+    let ret = unsafe {
+        CreateFileMappingA(
+            hFile,
+            if lpAttributes.is_null() { None } else { Some(lpAttributes) },
+            flProtect,
+            dwMaximumSizeHigh,
+            dwMaximumSizeLow,
+            lpName,
+        )
+    }
+    .unwrap_or(INVALID_HANDLE_VALUE);
+    debug_println!(
+        "CreateFileMappingA({:p}, {:?}, {:#X}, {:#X}, {:#X}, {:?}) = {:p}",
+        hFile.0,
+        lpAttributes,
+        flProtect.0,
+        dwMaximumSizeHigh,
+        dwMaximumSizeLow,
+        lpName,
+        ret.0
+    );
+    ret
+}
+
+/// `CreateFileMappingW` hook. Currently unsupported.
+extern "stdcall" fn hook_CreateFileMappingW(
+    _hFile: HANDLE,
+    _lpAttributes: *const SECURITY_ATTRIBUTES,
+    _flProtect: u32,
+    _dwMaximumSizeHigh: u32,
+    _dwMaximumSizeLow: u32,
+    _lpName: PCWSTR,
+) -> HANDLE {
+    panic!("CreateFileMappingW() is not supported");
+}
+
+/// `OpenFileMappingA` hook. Currently unsupported.
+extern "stdcall" fn hook_OpenFileMappingA(
+    _dwDesiredAccess: u32,
+    _bInheritHandle: BOOL,
+    _lpName: PCSTR,
+) -> HANDLE {
+    panic!("OpenFileMappingA() is not supported");
+}
+
+/// `OpenFileMappingW` hook. Currently unsupported.
+extern "stdcall" fn hook_OpenFileMappingW(
+    _dwDesiredAccess: u32,
+    _bInheritHandle: BOOL,
+    _lpName: PCWSTR,
+) -> HANDLE {
+    panic!("OpenFileMappingW() is not supported");
+}
+
+/// `MapViewOfFile` hook. If the file was read into memory, return that instead.
+extern "stdcall" fn hook_MapViewOfFile(
+    hFileMappingObject: HANDLE,
+    dwDesiredAccess: FILE_MAP,
+    dwFileOffsetHigh: u32,
+    dwFileOffsetLow: u32,
+    dwNumberOfBytesToMap: usize,
+) -> *mut c_void {
+    if !hFileMappingObject.is_invalid() {
+        let state = unsafe { GLOBAL_STATE.assume_init_mut() };
+        if let Some((_handle, data)) = state.file_by_mapping_handle(hFileMappingObject) {
+            let count = min(
+                dwNumberOfBytesToMap,
+                usize::try_from(data.len() as u64 - u64::from(dwFileOffsetLow))
+                    .unwrap_or(usize::MAX),
+            );
+            let ptr = unsafe {
+                std::alloc::alloc(std::alloc::Layout::from_size_align(count, 1).unwrap())
+            } as *mut c_void;
+            if ptr.is_null() {
+                return ptr;
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr().offset(dwFileOffsetLow as isize),
+                    ptr as *mut u8,
+                    count,
+                );
+            }
+            debug_println!(
+                "OVERRIDE MapViewOfFile({:p}, {:#X}, {:#X}, {:#X}, {:#X}) = {:p}",
+                hFileMappingObject.0,
+                dwDesiredAccess.0,
+                dwFileOffsetHigh,
+                dwFileOffsetLow,
+                dwNumberOfBytesToMap,
+                ptr
+            );
+            return ptr;
+        }
+    }
+
+    let ret = unsafe {
+        MapViewOfFile(
+            hFileMappingObject,
+            dwDesiredAccess,
+            dwFileOffsetHigh,
+            dwFileOffsetLow,
+            dwNumberOfBytesToMap,
+        )
+    };
+    debug_println!(
+        "MapViewOfFile({:p}, {:#X}, {:#X}, {:#X}, {:#X}) = {:p}",
+        hFileMappingObject.0,
+        dwDesiredAccess.0,
+        dwFileOffsetHigh,
+        dwFileOffsetLow,
+        dwNumberOfBytesToMap,
+        ret.Value
+    );
+    ret.Value
+}
+
+/// `MapViewOfFileEx` hook. Currently unsupported.
+extern "stdcall" fn hook_MapViewOfFileEx(
+    _hFileMappingObject: HANDLE,
+    _dwDesiredAccess: FILE_MAP,
+    _dwFileOffsetHigh: u32,
+    _dwFileOffsetLow: u32,
+    _dwNumberOfBytesToMap: usize,
+    _lpBaseAddress: *mut c_void,
+) -> *mut c_void {
+    panic!("MapViewOfFileEx() is not supported");
+}
+
+/// `UnmapViewOfFile` hook. Currently unsupported.
+extern "stdcall" fn hook_UnmapViewOfFile(_lpBaseAddress: *mut c_void) -> BOOL {
+    debug_println!("UnmapViewOfFile({:p})", _lpBaseAddress);
+    true.into()
 }
 
 /// `SetFilePointer` hook. If the file was read into memory, set the position in that instead.
@@ -413,7 +651,7 @@ extern "stdcall" fn hook_SetFilePointer(
             );
             handle.pos = pos;
             debug_println!(
-                "OVERRIDE SetFilePointer({:#X}, {:#X}, {:?}, {}) = {:#X}",
+                "OVERRIDE SetFilePointer({:p}, {:#X}, {:?}, {}) = {:#X}",
                 hFile.0,
                 distance_to_move,
                 lpDistanceToMoveHigh,
@@ -430,7 +668,7 @@ extern "stdcall" fn hook_SetFilePointer(
     let ret =
         unsafe { SetFilePointer(hFile, lDistanceToMove, Some(lpDistanceToMoveHigh), dwMoveMethod) };
     debug_println!(
-        "SetFilePointer({:#X}, {:#X}, {:?}, {}) = {:#X}",
+        "SetFilePointer({:p}, {:#X}, {:?}, {}) = {:#X}",
         hFile.0,
         lDistanceToMove,
         lpDistanceToMoveHigh,
@@ -465,7 +703,7 @@ extern "stdcall" fn hook_GetModuleFileNameA(
         let slice = unsafe { std::slice::from_raw_parts(lpFilename as *const u8, ret as usize) };
         let str = unsafe { std::str::from_utf8_unchecked(slice) };
         eprintln!(
-            "OVERRIDE GetModuleFileNameA({:#X}, {:?}, {:#X}) = {:#X} ({})",
+            "OVERRIDE GetModuleFileNameA({:p}, {:?}, {:#X}) = {:#X} ({})",
             hModule.0, lpFilename, nSize, ret, str
         );
     }
