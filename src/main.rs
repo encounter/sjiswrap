@@ -119,7 +119,7 @@ struct GlobalState {
     exe_path: CString,
     cmdline: Option<CString>,
     encoded_files: FxHashMap<PathBuf, Vec<u8>>,
-    file_handles: FxHashMap<isize, FileHandle>,
+    file_handles: FxHashMap<*mut c_void, FileHandle>,
 }
 
 impl GlobalState {
@@ -222,16 +222,7 @@ fn encode_file(handle: HANDLE, path: &Path) {
 
     let mut data = vec![0u8; filesize as usize];
     let mut bytes_read = 0u32;
-    if !unsafe {
-        ReadFile(
-            handle,
-            Some(data.as_mut_ptr() as *mut c_void),
-            data.len() as u32,
-            Some(&mut bytes_read),
-            None,
-        )
-    }
-    .as_bool()
+    if unsafe { ReadFile(handle, Some(data.as_mut_slice()), Some(&mut bytes_read), None) }.is_err()
         || bytes_read != filesize as u32
     {
         return;
@@ -332,9 +323,9 @@ extern "stdcall" fn hook_CloseHandle(hObject: HANDLE) -> BOOL {
         }
     }
 
-    let ret = unsafe { CloseHandle(hObject) };
-    debug_println!("CloseHandle({:#X}) = {:#X}", hObject.0, ret.0);
-    ret
+    let ret = unsafe { CloseHandle(hObject) }.is_ok();
+    debug_println!("CloseHandle({:#X}) = {:#X}", hObject.0, ret);
+    ret.into()
 }
 
 /// `ReadFile` hook. If the file was read into memory, read from that instead.
@@ -378,21 +369,23 @@ extern "stdcall" fn hook_ReadFile(
     let ret = unsafe {
         ReadFile(
             hFile,
-            Some(lpBuffer),
-            nNumberOfBytesToRead,
+            Some(std::slice::from_raw_parts_mut(
+                lpBuffer as *mut u8,
+                nNumberOfBytesToRead as usize,
+            )),
             Some(lpNumberOfBytesRead),
             Some(lpOverlapped),
         )
-    };
+    }.is_ok();
     debug_println!(
         "ReadFile({:#X}, {:?}, {:#X}, {:?}) = {:#X}",
         hFile.0,
         lpBuffer,
         nNumberOfBytesToRead,
         lpNumberOfBytesRead,
-        ret.0
+        ret
     );
-    ret
+    ret.into()
 }
 
 /// `SetFilePointer` hook. If the file was read into memory, set the position in that instead.
