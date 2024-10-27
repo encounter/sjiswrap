@@ -102,10 +102,8 @@ fn main() -> Result<()> {
     debug_println!("SetDllDirectoryA({:?})", parent.to_string_lossy());
 
     unsafe {
-        GLOBAL_STATE = MaybeUninit::new(GlobalState {
-            exe_path: abs_path_cstr,
-            ..Default::default()
-        })
+        GLOBAL_STATE =
+            MaybeUninit::new(GlobalState { exe_path: abs_path_cstr, ..Default::default() })
     };
 
     let mut buf = Vec::new();
@@ -703,7 +701,10 @@ extern "stdcall" fn hook_SetFilePointer(
                     FILE_BEGIN => distance_to_move as u64,
                     FILE_CURRENT => handle.pos.saturating_add_signed(distance_to_move),
                     FILE_END => file_size.saturating_add_signed(distance_to_move),
-                    _ => fail!("sjiswrap: SetFilePointer(): Unsupported move method {:#X}", dwMoveMethod.0),
+                    _ => fail!(
+                        "sjiswrap: SetFilePointer(): Unsupported move method {:#X}",
+                        dwMoveMethod.0
+                    ),
                 },
                 file_size,
             );
