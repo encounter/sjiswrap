@@ -18,6 +18,7 @@ Encoded file extensions:
 - `.hp`
 - `.hpp`
 - `.hxx`
+- `.inc`
 
 ## Usage
 

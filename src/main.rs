@@ -59,6 +59,7 @@ fn is_text_file(path: &Path) -> bool {
         || ext == OsStr::new("hp")
         || ext == OsStr::new("hpp")
         || ext == OsStr::new("hxx")
+        || ext == OsStr::new("inc")
 }
 
 macro_rules! debug_println {
