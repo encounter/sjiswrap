@@ -54,11 +54,15 @@ fn is_text_file(path: &Path) -> bool {
         || ext == OsStr::new("cp")
         || ext == OsStr::new("cpp")
         || ext == OsStr::new("cxx")
+        || ext == OsStr::new("c++")
         || ext == OsStr::new("h")
         || ext == OsStr::new("hh")
         || ext == OsStr::new("hp")
         || ext == OsStr::new("hpp")
         || ext == OsStr::new("hxx")
+        || ext == OsStr::new("h++")
+        || ext == OsStr::new("pch")
+        || ext == OsStr::new("pch++")
         || ext == OsStr::new("inc")
 }
 

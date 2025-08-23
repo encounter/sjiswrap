@@ -13,11 +13,15 @@ Encoded file extensions:
 - `.cp`
 - `.cpp`
 - `.cxx`
+- `.c++`
 - `.h`
 - `.hh`
 - `.hp`
 - `.hpp`
 - `.hxx`
+- `.h++`
+- `.pch`
+- `.pch++`
 - `.inc`
 
 ## Usage
