@@ -25,7 +25,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           components: clippy
-          toolchain: nightly-2023-09-18
+          toolchain: nightly-2025-10-26
       - name: Cache Rust workspace
         uses: Swatinem/rust-cache@v2
       - name: Cargo check
@@ -46,7 +46,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           components: rustfmt
-          toolchain: nightly-2023-09-18
+          toolchain: nightly-2025-10-26
       - name: Cargo fmt
         run: cargo fmt --all --check
 
@@ -70,7 +70,7 @@ jobs:
         with:
           components: rust-src
           targets: ${{ matrix.target }}
-          toolchain: nightly-2023-09-18
+          toolchain: nightly-2025-10-26
       - name: Cache Rust workspace
         uses: Swatinem/rust-cache@v2
         with:
